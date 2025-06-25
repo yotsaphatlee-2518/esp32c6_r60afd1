@@ -1,0 +1,7 @@
+# Build directory
+build/
+
+# Other common files to ignore
+sdkconfig
+sdkconfig.old
+.DS_Store

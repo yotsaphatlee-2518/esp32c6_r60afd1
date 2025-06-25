@@ -1,0 +1,345 @@
+#include <WiFi.h>
+#include <WiFiManager.h>  // WiFiManager for WiFi handling
+#include <PubSubClient.h>
+
+// ประกาศโปรโตไทป์ของฟังก์ชัน
+void getUserInput();
+void sendMQTTData();
+
+// WiFiManager Configurations
+#define WIFI_RESET_PIN 0  // GPIO for WiFi reset button
+WiFiManager wm;
+
+// WiFi และ MQTT Configurations
+const char* mqtt_server = "192.168.1.67";
+const int mqtt_port = 1883;
+const char* mqtt_user = "raspi5nr";
+const char* mqtt_password = "12345";
+const char* topic = "Fulldetector";
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// Sensor Configurations
+#define TX_PIN 17
+#define RX_PIN 16
+HardwareSerial mySerial(1);
+
+// ตัวแปรเซ็นเซอร์ R60AFD1
+int presenceDetected = 1;
+int motionDetected = 0; // 0: ไม่เคลื่อนไหว, 1: เคลื่อนไหวระดับต่ำ, 2: เคลื่อนไหวระดับสูง
+int activityLevel = 1;
+int fallDetected = 0;
+int stationaryState = 0; // 0: ไม่มีวัตถุอยู่นิ่ง, 1: มีวัตถุอยู่นิ่ง
+float heightPercentage[4] = {0}; // เก็บเปอร์เซ็นต์ความสูงในแต่ละช่วง
+int fallSensitivity = 0; // ความไวการตรวจจับการล้ม (0-3)
+int fallTime = 0; // เวลาการตรวจจับการล้ม (5-180 วินาที)
+int residenceTime = 0; // เวลาการตรวจจับการอยู่นิ่ง (60-3600 วินาที)
+int residenceSwitch = 0; // สถานะการเปิด/ปิดการตรวจจับการอยู่นิ่ง (0: ปิด, 1: เปิด)
+int heightAccumulationTime = 0; // เวลาการสะสมความสูง (0-300 วินาที)
+
+// หน่วงเวลา 5 วินาที
+unsigned long last_update = 0;
+const unsigned long update_interval = 5000;
+
+std::vector<uint8_t> bytes;
+
+// Function to setup WiFi using WiFiManager
+void setupWiFiManager() {
+  pinMode(WIFI_RESET_PIN, INPUT_PULLUP);
+  if (digitalRead(WIFI_RESET_PIN) == LOW) {
+    Serial.println("Wi-Fi reset button pressed. Resetting WiFi settings...");
+    wm.resetSettings(); // รีเซ็ตการตั้งค่า Wi-Fi
+    delay(1000); // รอให้การรีเซ็ตเสร็จสมบูรณ์
+  }
+
+  // Check if we have a saved Wi-Fi configuration
+  if (!wm.autoConnect("Fulldetec")) {
+    Serial.println("Failed to connect to WiFi. Starting AP mode...");
+    wm.startConfigPortal("Fulldetector");
+  }
+
+  Serial.println("WiFi connected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+}
+
+// Function to setup MQTT client
+void setupMQTT() {
+  client.setServer(mqtt_server, mqtt_port);
+}
+
+// Function to reconnect MQTT
+void reconnectMQTT() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    if (client.connect("ESP32Client", mqtt_user, mqtt_password)) {
+      Serial.println("connected");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" trying again in 5 seconds");
+      delay(5000);
+    }
+  }
+}
+
+// ฟังก์ชันสำหรับคำนวณ checksum
+uint8_t calculateChecksum(uint8_t* data, int length) {
+  uint8_t checksum = 0;
+  for (int i = 0; i < length; i++) {
+    checksum += data[i];
+  }
+  return checksum;
+}
+
+// ฟังก์ชันสำหรับส่งคำสั่ง Query Height Percentage
+void queryHeightPercentage() {
+    uint8_t command[10] = {0x53, 0x59, 0x83, 0x8E, 0x00, 0x01, 0x0F, 0x00, 0x54, 0x43};
+    command[7] = calculateChecksum(command, 7);
+    mySerial.write(command, sizeof(command));
+    Serial.println("📡 Querying Height Percentage...");
+}
+
+// ฟังก์ชันสำหรับส่งคำสั่ง Query Stationary Residence State
+void queryStationaryState() {
+    uint8_t command[10] = {0x53, 0x59, 0x83, 0x85, 0x00, 0x01, 0x0F, 0x00, 0x54, 0x43};
+    command[7] = calculateChecksum(command, 7);
+    mySerial.write(command, sizeof(command));
+    Serial.println("📡 Querying Stationary Residence State...");
+}
+
+// ฟังก์ชันสำหรับส่งคำสั่ง Query Fall Status
+void queryFallStatus() {
+    uint8_t command[10] = {0x53, 0x59, 0x83, 0x81, 0x00, 0x01, 0x0F, 0x00, 0x54, 0x43};
+    command[7] = calculateChecksum(command, 7);
+    mySerial.write(command, sizeof(command));
+    Serial.println("📡 Querying Fall Status...");
+}
+
+// ฟังก์ชันสำหรับส่งคำสั่ง Query Fall Time
+void queryFallTime() {
+    uint8_t command[10] = {0x53, 0x59, 0x83, 0x8C, 0x00, 0x01, 0x0F, 0x00, 0x54, 0x43};
+    command[7] = calculateChecksum(command, 7);
+    mySerial.write(command, sizeof(command));
+    Serial.println("📡 Querying Fall Time...");
+}
+
+// ฟังก์ชันสำหรับส่งคำสั่ง Query Residence Time
+void queryResidenceTime() {
+    uint8_t command[10] = {0x53, 0x59, 0x83, 0x8A, 0x00, 0x01, 0x0F, 0x00, 0x54, 0x43};
+    command[7] = calculateChecksum(command, 7);
+    mySerial.write(command, sizeof(command));
+    Serial.println("📡 Querying Residence Time...");
+}
+
+// ฟังก์ชันสำหรับส่งคำสั่ง Query Residence Switch
+void queryResidenceSwitch() {
+    uint8_t command[10] = {0x53, 0x59, 0x83, 0x8B, 0x00, 0x01, 0x0F, 0x00, 0x54, 0x43};
+    command[7] = calculateChecksum(command, 7);
+    mySerial.write(command, sizeof(command));
+    Serial.println("📡 Querying Residence Switch...");
+}
+
+// ฟังก์ชันสำหรับส่งคำสั่ง Query Fall Sensitivity
+void queryFallSensitivity() {
+    uint8_t command[10] = {0x53, 0x59, 0x83, 0x8D, 0x00, 0x01, 0x0F, 0x00, 0x54, 0x43};
+    command[7] = calculateChecksum(command, 7);
+    mySerial.write(command, sizeof(command));
+    Serial.println("📡 Querying Fall Sensitivity...");
+}
+
+// ฟังก์ชันสำหรับส่งคำสั่ง Query Height Accumulation Time
+void queryHeightAccumulationTime() {
+    uint8_t command[10] = {0x53, 0x59, 0x83, 0x8F, 0x00, 0x01, 0x0F, 0x00, 0x54, 0x43};
+    command[7] = calculateChecksum(command, 7);
+    mySerial.write(command, sizeof(command));
+    Serial.println("📡 Querying Height Accumulation Time...");
+}
+
+// ฟังก์ชันสำหรับประมวลผลแพ็กเก็ตข้อมูล
+void processPacket() {
+  if (bytes.size() < 7) return;
+
+  // แสดงผลข้อมูลดิบที่เซ็นเซอร์ส่งมา
+  Serial.println("Raw Data from Sensor:");
+  for (size_t i = 0; i < bytes.size(); i++) {
+    Serial.printf("%02X ", bytes[i]);
+  }
+  Serial.println();
+
+  if (bytes[0] == 0x53 && bytes[1] == 0x59) {
+    switch (bytes[2]) {
+      case 0x80: // ประเภทข้อมูลทั่วไป
+        switch (bytes[3]) {
+          case 0x01: // presenceDetected
+            presenceDetected = bytes[6];
+            break;
+          case 0x02: // motionDetected
+            motionDetected = bytes[6]; // อัปเดตค่า motionDetected
+            Serial.print("Updated Motion Detected: ");
+            Serial.println(motionDetected); // แสดงผลค่า motionDetected ที่อัปเดต
+            break;
+          case 0x03: // activityLevel
+            activityLevel = bytes[6];
+            fallDetected = (activityLevel >= 85) ? 1 : 0; // ตรวจสอบ fallDetected
+            break;
+        }
+        break;
+      case 0x83: // ประเภทข้อมูลความสูง
+        if (bytes[3] == 0x85) { // Query Stationary Residence State
+          stationaryState = bytes[6]; // 0x00: ไม่มีวัตถุอยู่นิ่ง, 0x01: มีวัตถุอยู่นิ่ง
+          Serial.print("Stationary Residence State: ");
+          Serial.println(stationaryState ? "Occupied" : "Unoccupied");
+        }
+        if (bytes[3] == 0x8E) { // Query Height Percentage
+          heightPercentage[0] = bytes[6] * 0.01; // 0-0.5m
+          heightPercentage[1] = bytes[7] * 0.01; // 0.5-1m
+          heightPercentage[2] = bytes[8] * 0.01; // 1-1.5m
+          heightPercentage[3] = bytes[9] * 0.01; // 1.5-2m
+
+          // แสดงผลค่าของ heightPercentage[]
+          Serial.print("Height Percentages: ");
+          for (int i = 0; i < 4; i++) {
+            Serial.print(heightPercentage[i], 2); // แสดงค่าถึง 2 ตำแหน่งทศนิยม
+            Serial.print(" ");
+          }
+          Serial.println();
+        }
+        break;
+    }
+  }
+}
+
+// ฟังก์ชันแสดงผลข้อมูลที่ต้องส่งไปยัง MQTT
+void sendMQTTData() {
+  char payload[512];
+  snprintf(payload, sizeof(payload),
+           "{ \"device_id\": \"Fulldetector2\", \"device_type\": \"R60AFD1\", \"presence\": %d, \"motion\": %d, \"activity_level\": %d, \"fall_detected\": %d, \"stationary_state\": %d,  \"height0\": %.2f,  \"height1\": %.2f,  \"height2\": %.2f,  \"height3\": %.2f}",
+           presenceDetected, motionDetected, activityLevel, fallDetected, stationaryState, 
+           heightPercentage[0], heightPercentage[1], heightPercentage[2], heightPercentage[3]);
+
+  if (client.publish(topic, payload)) {
+    Serial.println("Message sent successfully:");
+    Serial.println(payload);  // แสดงเฉพาะข้อมูล JSON ที่ส่ง
+  } else {
+    Serial.println("Message failed to send");
+  }
+}
+
+// ฟังก์ชันสำหรับรับค่าจากผู้ใช้
+void getUserInput() {
+  Serial.println("กรุณากรอกค่าต่าง ๆ สำหรับเซ็นเซอร์ R60AFD1:");
+
+  // Fall Monitoring Function Switch
+  Serial.println("กรุณากรอกค่า Fall Monitoring Function Switch เปิด (1) หรือ ปิด (0):");
+  while (!Serial.available()) {}
+  fallDetected = Serial.parseInt();
+  Serial.print("Fall Monitoring Function Switch ตั้งค่าเป็น: ");
+  Serial.println(fallDetected);
+
+  // Fall Sensitivity
+  Serial.println("กรุณากรอกค่า Fall Sensitivity (0-3):");
+  while (!Serial.available()) {}
+  fallSensitivity = Serial.parseInt();
+  Serial.print("Fall Sensitivity ตั้งค่าเป็น: ");
+  Serial.println(fallSensitivity);
+
+  // Fall Time
+  Serial.println("กรุณากรอกค่า Fall Time (5-180 วินาที):");
+  while (!Serial.available()) {}
+  fallTime = Serial.parseInt();
+  Serial.print("Fall Time ตั้งค่าเป็น: ");
+  Serial.println(fallTime);
+
+  // Residence Time
+  Serial.println("กรุณากรอกค่า Residence Time (60-3600 วินาที):");
+  while (!Serial.available()) {}
+  residenceTime = Serial.parseInt();
+  Serial.print("Residence Time ตั้งค่าเป็น: ");
+  Serial.println(residenceTime);
+
+  // Residence Switch
+  Serial.println("กรุณากรอกค่า Residence Switch เปิด (1) หรือ ปิด (0):");
+  while (!Serial.available()) {}
+  residenceSwitch = Serial.parseInt();
+  Serial.print("Residence Switch ตั้งค่าเป็น: ");
+  Serial.println(residenceSwitch);
+
+  // Height Accumulation Time
+  Serial.println("กรุณากรอกค่า Height Accumulation Time (0-300 วินาที):");
+  while (!Serial.available()) {}
+  heightAccumulationTime = Serial.parseInt();
+  Serial.print("Height Accumulation Time ตั้งค่าเป็น: ");
+  Serial.println(heightAccumulationTime);
+
+  Serial.println("การตั้งค่าสำเร็จ!");
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  // Setup WiFi Manager
+  setupWiFiManager();
+
+  // รับค่าจากผู้ใช้
+  getUserInput();
+
+  // Setup MQTT
+  setupMQTT();
+
+  // Initialize sensor UART
+  mySerial.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
+  Serial.println("R60AFD1 Sensor Initialized");
+}
+
+void loop() {
+  static uint8_t buffer[128];
+  static int index = 0;
+
+  // Ensure MQTT is connected
+  if (!client.connected()) {
+    reconnectMQTT();
+  }
+  client.loop();
+
+  // ส่งคำสั่ง Query Height Percentage และ Query Stationary State ทุก 10 วินาที
+  static unsigned long lastQueryTime = 0;
+  if (millis() - lastQueryTime > 10000) {
+    queryFallStatus(); // Query fall status
+    queryFallTime(); // Query fall time
+    queryResidenceTime(); // Query residence time
+    queryResidenceSwitch(); // Query residence switch
+    queryFallSensitivity(); // Query fall sensitivity
+    queryHeightPercentage(); // Query height percentage
+    queryStationaryState(); // ฟังก์ชันสำหรับส่งคำสั่ง Query Stationary Residence State
+    queryHeightAccumulationTime(); // Query height accumulation time
+    lastQueryTime = millis();
+  }
+
+  // อ่านข้อมูลจากเซ็นเซอร์
+  while (mySerial.available()) {
+    buffer[index++] = mySerial.read();
+
+    // ตรวจสอบเฟรมท้าย (Frame Tail: 0x54 0x43)
+    if (index >= 7 && buffer[index - 2] == 0x54 && buffer[index - 1] == 0x43) {
+      bytes.assign(buffer, buffer + index);  // เก็บข้อมูลในตัวแปร bytes
+      processPacket();  // ประมวลผลแพ็กเกจ
+      index = 0;  // รีเซ็ต index สำหรับแพ็กเกจใหม่
+    }
+  }
+
+  // แสดงผลข้อมูลเซ็นเซอร์ใน Serial Monitor
+  Serial.print("Motion Detected: ");
+  Serial.println(motionDetected);
+  Serial.print("Fall Detected: ");
+  Serial.println(fallDetected);
+  Serial.print("Stationary Residence State: ");
+  Serial.println(stationaryState ? "No stationary residency" : "stationary residency");
+
+  // ส่งข้อมูลผ่าน MQTT
+  sendMQTTData();
+
+  delay(5000); // Publish every 5 seconds
+}
