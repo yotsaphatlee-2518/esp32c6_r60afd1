@@ -2177,7 +2177,7 @@ void app_main(void)
     snprintf(mqtt_topic_info_device_id, sizeof(mqtt_topic_info_device_id), "%s/info", g_device_id);
     snprintf(mqtt_topic_settings_state_device_id, sizeof(mqtt_topic_settings_state_device_id), "%s/settings_state", g_device_id);
     snprintf(mqtt_topic_ota_update, sizeof(mqtt_topic_ota_update), "%s/ota_update", g_device_id);
-    snprintf(mqtt_topic_live, sizeof(mqtt_topic_live), "%s/live", g_device_id);
+    snprintf(mqtt_topic_live, sizeof(mqtt_topic_live), "R60AFD1/live", g_device_id);
 
     // Initialize UART for communication with the radar module
     init_uart();

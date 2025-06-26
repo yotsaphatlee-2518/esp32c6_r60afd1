@@ -5,3 +5,6 @@ build/
 sdkconfig
 sdkconfig.old
 .DS_Store
+
+main/crt/*
+!main/crt/.gitkeep
