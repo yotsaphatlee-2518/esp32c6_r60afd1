@@ -1,4 +1,4 @@
-![image alt](https://github.com/yotsaphatlee-2518/ESP32S3_N16R8camov2640/blob/74446f2b24ace2f015ff6b2798d865e3bbcb936a/PIC/1747295280793.jpg)
+![image alt](https://github.com/yotsaphatlee-2518/esp32c6_r60afd1/blob/bdd7015c53777d0298e4631317ee5056b96bd508/esp32c6.jpg)
 # Set up the ESP-IDF environment
 . $HOME/esp/esp-idf/export.sh
 
