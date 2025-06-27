@@ -25,8 +25,8 @@ char g_device_id[32] = DEVICE_ID; // Default Device ID (สามารถ overr
 #include "driver/gpio.h" // เพิ่มสำหรับใช้งาน GPIO
 
 // เพิ่ม extern สำหรับ certificate
-extern const uint8_t server1_crt_start[] asm("_binary_server1_crt_start");
-extern const uint8_t server1_crt_end[]   asm("_binary_server1_crt_end");
+extern const uint8_t server1_crt_start[] asm("_binary_dev_crt_start");
+extern const uint8_t server1_crt_end[]   asm("_binary_dev_crt_end");
 
 // Add these function prototypes before mqtt_event_handler
 void update_installation_angles(int16_t angle_x, int16_t angle_y, int16_t angle_z);
@@ -2172,12 +2172,14 @@ void app_main(void)
     // Load device ID from NVS, or use default and save it
     load_device_id_from_nvs();
 
+    printf("DEVICE_ID=%s\n", g_device_id); // เพิ่มบรรทัดนี้
+
     // Construct dynamic MQTT topics
     snprintf(mqtt_topic_settings_update, sizeof(mqtt_topic_settings_update), "%s/settings_update", g_device_id);
     snprintf(mqtt_topic_info_device_id, sizeof(mqtt_topic_info_device_id), "%s/info", g_device_id);
     snprintf(mqtt_topic_settings_state_device_id, sizeof(mqtt_topic_settings_state_device_id), "%s/settings_state", g_device_id);
     snprintf(mqtt_topic_ota_update, sizeof(mqtt_topic_ota_update), "%s/ota_update", g_device_id);
-    snprintf(mqtt_topic_live, sizeof(mqtt_topic_live), "R60AFD1/live", g_device_id);
+    snprintf(mqtt_topic_live, sizeof(mqtt_topic_live), "R60AFD1/live");
 
     // Initialize UART for communication with the radar module
     init_uart();
@@ -2272,7 +2274,7 @@ void wifi_reset_button_task(void *arg) {
     int hold_time = 0;
     while (1) {
         int level = gpio_get_level(RESET_BUTTON_GPIO);
-        printf("DEBUG: GPIO%d level = %d\n", RESET_BUTTON_GPIO, level);
+        // printf("DEBUG: GPIO%d level = %d\n", RESET_BUTTON_GPIO, level);
         if (level == 0) { // ปุ่มถูกกด (active low)
             hold_time += 100;
             if (hold_time >= RESET_HOLD_TIME_MS) {
